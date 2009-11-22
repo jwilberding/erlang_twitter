@@ -71,17 +71,20 @@
     status_replies/2,
     status_destroy/2,
     account_archive/2, collect_account_archive/4,
+    account_update_location/2,
+    account_update_delivery_device/2,
+    account_rate_limit_status/2,
+    direct_messages/2, collect_direct_messages/4,
+    direct_new/2,
+    direct_sent/2,
+    direct_destroy/2,
 account_end_session/4, 
-account_rate_limit_status/4, account_rate_limit_status/5, 
-account_update_delivery_device/4, account_update_delivery_device/5, 
-account_update_location/4, account_update_location/5, account_verify_credentials/4, 
+account_verify_credentials/4, 
 account_verify_credentials/5, add_session/2, block_create/4, block_create/5, 
 block_destroy/4, block_destroy/5, build_url/2, call/2, call/3,
-collect_direct_messages/6, 
-collect_direct_messages/7, collect_favorites/5, collect_favorites/6, collect_user_friends/5,
-collect_user_friends/6, collect_user_followers/5, collect_user_followers/6, direct_destroy/4, 
-direct_destroy/5, direct_messages/4, direct_messages/5, direct_new/4, direct_new/5,
-direct_sent/4, direct_sent/5, exists_session/1, favorites_create/4, favorites_create/5,
+collect_favorites/5, collect_favorites/6, collect_user_friends/5,
+collect_user_friends/6, collect_user_followers/5, collect_user_followers/6,
+exists_session/1, favorites_create/4, favorites_create/5,
 favorites_destroy/4, favorites_destroy/5, favorites_favorites/4, favorites_favorites/5,
 friendship_create/4, friendship_create/5, friendship_destroy/4, friendship_destroy/5,
 friendship_exists/4, friendship_exists/5, headers/2, help_test/4, info/0,
@@ -315,16 +318,14 @@ status_destroy(Auth, [{"id", Id}]) ->
 
 account_verify_credentials(RootUrl, Login, Password, _) ->
     Url = build_url(RootUrl ++ "account/verify_credentials.xml", []),
-    HTTPResult = http:request(get, {Url, headers(Login, Password)}, [], []),
-    case HTTPResult of
+    case http:request(get, {Url, headers(Login, Password)}, [], []) of
         {ok, {{_HTTPVersion, 200, _Text}, _Headers, _Body}} -> true;
         {ok, {{_HTTPVersion, 401, _Text}, _Headers, _Body}} -> false;
         _ -> {error}
     end.
 account_verify_credentials(RootUrl, Consumer, Token, Secret, _) ->
     Url = build_url(RootUrl ++ "account/verify_credentials.xml", []),
-    HTTPResult = oauth:get(Url, [], Consumer, Token, Secret),
-    case HTTPResult of
+    case oauth:get(Url, [], Consumer, Token, Secret) of
         {ok, {{_HTTPVersion, 200, _Text}, _Headers, _Body}} -> true;
         {ok, {{_HTTPVersion, 401, _Text}, _Headers, _Body}} -> false;
         _ -> {error}
@@ -341,114 +342,49 @@ account_archive(Auth, Args) ->
 collect_account_archive(Auth, Page, Args, Acc) ->
     NArgs = [{"page", integer_to_list(Page)} ] ++ Args,
     Messages = twitter_client:account_archive(Auth, NArgs),
+    %% NKG: Assert that `Messages` is a list?
     case length(Messages) of
         80 -> collect_account_archive(Auth, Page + 1, Args, [Messages | Acc]);
         0 -> lists:flatten(Acc);
         _ -> lists:flatten([Messages | Acc])
     end.
 
-account_update_location(RootUrl, Login, Password, Args) ->
-    Url = build_url(RootUrl ++ "account/update_location.xml", Args),
-    Body = request_url(get, Url, Login, Password, nil),
-    parse_user(Body).
-account_update_location(RootUrl, Consumer, Token, Secret, Args) ->
-    Url = RootUrl ++ "account/update_location.xml",
-    Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_user(Body).
+account_update_location(Auth, Args) ->
+    Url = build_url("account/update_location.xml", Args),
+    request_url(get, Url, Auth, [], fun(X) -> parse_user(X) end).
 
-account_update_delivery_device(RootUrl, Login, Password, Args) ->
-    Url = build_url(RootUrl ++ "account/update_delivery_device.xml", Args),
-    Body = request_url(get, Url, Login, Password, nil),
-    parse_user(Body).
-account_update_delivery_device(RootUrl, Consumer, Token, Secret, Args) ->
-    Url = RootUrl ++ "account/update_delivery_device.xml",
-    Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_user(Body).
+account_update_delivery_device(Auth, Args) ->
+    Url = build_url("account/update_delivery_device.xml", Args),
+    request_url(get, Url, Auth, [], fun(X) -> parse_user(X) end).
 
-account_rate_limit_status(RootUrl, Login, Password, Args) ->
-    Url = build_url(RootUrl ++ "account/rate_limit_status.xml", Args),
-    Body = request_url(get, Url, Login, Password, nil),
-    parse_rate_limit(Body).
-account_rate_limit_status(RootUrl, Consumer, Token, Secret, Args) ->
-    Url = RootUrl ++ "account/rate_limit_status.xml",
-    Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_rate_limit(Body).
+account_rate_limit_status(Auth, Args) ->
+    Url = build_url("account/rate_limit_status.xml", Args),
+    request_url(get, Url, Auth, [], fun(X) -> parse_rate_limit(X) end).
 
-%% % -
-%% % Direct Message API methods
+direct_messages(Auth, Args) ->
+    Url = build_url("direct_messages.xml", Args),
+    request_url(get, Url, Auth, [], fun(X) -> parse_messages(X) end).
 
-direct_messages(RootUrl, Login, Password, Args) ->
-    Url = build_url(RootUrl ++ "direct_messages.xml", Args),
-    Body = request_url(get, Url, Login, Password, nil),
-    parse_messages(Body).
-direct_messages(RootUrl, Consumer, Token, Secret, Args) ->
-    Url = RootUrl ++ "direct_messages.xml",
-    Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_messages(Body).
-
-collect_direct_messages(RootUrl, Login, Password, Page, LowID, Acc) ->
+collect_direct_messages(Auth, Page, LowID, Acc) ->
     Args = [{"page", integer_to_list(Page)}, {"since_id", integer_to_list(LowID)}],
-    Messages = twitter_client:direct_messages(RootUrl, Login, Password, Args),
-    case Messages of
-      error -> lists:flatten(Acc);
-      {error, _Error} -> lists:flatten(Acc);
-      _ ->
-        case length(Messages) of
-            20 -> collect_direct_messages(RootUrl, Login, Password, Page + 1, LowID, [Messages | Acc]);
-            0 -> lists:flatten(Acc);
-            _ -> lists:flatten([Messages | Acc])
-        end
-    end.
-collect_direct_messages(RootUrl, Consumer, Token, Secret, Page, LowID, Acc) ->
-    Args = [{"page", integer_to_list(Page)}, {"since_id", integer_to_list(LowID)}],
-    Messages = twitter_client:direct_messages(RootUrl, Consumer, Token, Secret, Args),
-    case Messages of
-      error -> lists:flatten(Acc);
-      {error, _Error} -> lists:flatten(Acc);
-      _ ->
-        case length(Messages) of
-            20 -> collect_direct_messages(RootUrl, Consumer, Token, Secret, Page + 1, LowID, [Messages | Acc]);
-            0 -> lists:flatten(Acc);
-            _ -> lists:flatten([Messages | Acc])
-        end
+    Messages = twitter_client:direct_messages(Auth, Args),
+    %% NKG: Assert that `Messages` is a list?
+    case length(Messages) of
+        20 -> collect_direct_messages(Auth, Page + 1, LowID, [Messages | Acc]);
+        0 -> lists:flatten(Acc);
+        _ -> lists:flatten([Messages | Acc])
     end.
 
-direct_new(RootUrl, Login, Password, Args) ->
-    Url = RootUrl ++ "direct_messages/new.xml",
-    Body = request_url(post, Url, Login, Password, Args),
-    parse_message(Body).
-direct_new(RootUrl, Consumer, Token, Secret, Args) ->
-    Url = RootUrl ++ "direct_messages/new.xml",
-    Body = oauth_request_url(post, Url, Consumer, Token, Secret, Args),
-    parse_message(Body).
+direct_new(Auth, Args) ->
+    request_url(post, "direct_messages/new.xml", Auth, Args, fun(Body) -> parse_message(Body) end).
 
-direct_sent(RootUrl, Login, Password, Args) ->
-    Url = build_url(RootUrl ++ "direct_messages/sent.xml", Args),
-    Body = request_url(get, Url, Login, Password, nil),
-    parse_messages(Body).
-direct_sent(RootUrl, Consumer, Token, Secret, Args) ->
-    Url = RootUrl ++ "direct_messages/sent.xml",
-    Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_messages(Body).
+direct_sent(Auth, Args) ->
+    Url = build_url("direct_messages/sent.xml", Args),
+    request_url(get, Url, Auth, [], fun(Body) -> parse_messages(Body) end).
 
-direct_destroy(RootUrl, Login, Password, Args) ->
-    UrlBase = RootUrl ++ "direct_messages/destroy/",
-    case Args of
-        [{"id", Id}] ->
-            Url = build_url(UrlBase ++ Id ++ ".xml", []),
-            Body = request_url(get, Url, Login, Password, nil),
-            parse_status(Body);
-        _ -> {error}
-    end.
-direct_destroy(RootUrl, Consumer, Token, Secret, Args) ->
-    UrlBase = RootUrl ++ "direct_messages/destroy/",
-    case Args of
-        [{"id", Id}] ->
-            Url = UrlBase ++ Id ++ ".xml",
-            Body = oauth_request_url(get, Url, Consumer, Token, Secret, []),
-            parse_status(Body);
-        _ -> {error}
-    end.
+direct_destroy(Auth, [{"id", Id}]) ->
+    Url = build_url("direct_messages/destroy/" ++ Id ++ ".xml", []),
+    request_url(get, Url, Auth, [], fun(Body) -> parse_status(Body) end).
 
 %% % -
 %% % Favorites API methods
