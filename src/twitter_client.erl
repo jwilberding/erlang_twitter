@@ -54,20 +54,30 @@
 -behaviour(gen_server).
 
 -author("Nick Gerakines <nick@gerakines.net>").
--version("0.4.3").
+-version("0.5").
 
 -export([
     init/1, terminate/2, code_change/3,
     handle_call/3, handle_cast/2, handle_info/2
 ]).
 
--export([account_archive/4, account_archive/5, account_end_session/4, 
+-export([
+    status_friends_timeline/2,
+    status_home_timeline/2,
+    status_user_timeline/2,
+    status_mentions/2,
+    status_show/2,
+    status_update/2,
+    status_replies/2,
+    status_destroy/2,
+    account_archive/2, collect_account_archive/4,
+account_end_session/4, 
 account_rate_limit_status/4, account_rate_limit_status/5, 
 account_update_delivery_device/4, account_update_delivery_device/5, 
 account_update_location/4, account_update_location/5, account_verify_credentials/4, 
 account_verify_credentials/5, add_session/2, block_create/4, block_create/5, 
 block_destroy/4, block_destroy/5, build_url/2, call/2, call/3,
-collect_account_archive/6, collect_account_archive/7, collect_direct_messages/6, 
+collect_direct_messages/6, 
 collect_direct_messages/7, collect_favorites/5, collect_favorites/6, collect_user_friends/5,
 collect_user_friends/6, collect_user_followers/5, collect_user_followers/6, direct_destroy/4, 
 direct_destroy/5, direct_messages/4, direct_messages/5, direct_new/4, direct_new/5,
@@ -78,10 +88,7 @@ friendship_exists/4, friendship_exists/5, headers/2, help_test/4, info/0,
 notification_follow/4, notification_follow/5, notification_leave/4, notification_leave/5,
 parse_status/1, parse_statuses/1, parse_user/1, parse_users/1, request_url/5, 
 session_from_client/2, set/2, start/0, social_graph_friend_ids/4, social_graph_friend_ids/6,
-social_graph_follower_ids/4, social_graph_follower_ids/6, status_destroy/4, status_destroy/5, 
-status_friends_timeline/4, status_friends_timeline/5, status_public_timeline/4, 
-status_public_timeline/5, status_replies/4, status_replies/5, status_show/4, status_show/5, 
-status_update/4, status_update/5, status_user_timeline/4, status_user_timeline/5, 
+social_graph_follower_ids/4, social_graph_follower_ids/6,
 text_or_default/3, user_featured/4, user_followers/4, user_followers/5, user_friends/4, 
 user_friends/5, user_show/4, user_show/5, delay/0]).
 
@@ -89,6 +96,8 @@ user_friends/5, user_show/4, user_show/5, delay/0]).
 -include_lib("xmerl/include/xmerl.hrl").
 
 -record(erlang_twitter, {sessions, base_url, delay, lastcall}).
+
+-define(BASE_URL(X), "http://www.twitter.com/" ++ X).
 
 %% @spec start() -> Result
 %% where 
@@ -129,7 +138,6 @@ info() ->
 
 delay() ->
     gen_server:call(?MODULE, {should_wait}, infinity).    
-
 
 %% @equiv call(Client, Method, [])
 call(Client, Method) ->
@@ -205,17 +213,17 @@ handle_call({exists_session, Login}, _From, State) ->
 
 handle_call({info}, _From, State) ->
     {reply, State, State};
-    
+
 handle_call({Client, collect_direct_messages, LowId}, _From, State) ->
-  Now = calendar:datetime_to_gregorian_seconds(erlang:universaltime()),
-  Response = case session_from_client(State, Client) of
-      {error, Reason} -> {error, Reason};
-      {Login, Password} ->
-          twitter_client:collect_direct_messages(State#erlang_twitter.base_url, Login, Password, 1, LowId, []);
-      _ -> {error, unknown}
-  end,
-  {reply, Response, State#erlang_twitter{ lastcall = Now }};
-  
+    Now = calendar:datetime_to_gregorian_seconds(erlang:universaltime()),
+    Response = case session_from_client(State, Client) of
+        {error, Reason} -> {error, Reason};
+        {Login, Password} ->
+            twitter_client:collect_direct_messages(State#erlang_twitter.base_url, Login, Password, 1, LowId, []);
+        _ -> {error, unknown}
+    end,
+    {reply, Response, State#erlang_twitter{ lastcall = Now }};
+
 handle_call({Client, collect_user_friends, _Args}, _From, State) ->
     Now = calendar:datetime_to_gregorian_seconds(erlang:universaltime()),
     Response = case session_from_client(State, Client) of
@@ -265,113 +273,42 @@ terminate(_Reason, _State) -> ok.
 %% @private
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
-%% @doc Return a list of the most recent tweets as per the public
-%% timeline. This API call ignores the login and password strings
-%% given.
-status_public_timeline(RootUrl, _Login, _Password, Args) ->
-    Url = build_url(RootUrl ++ "statuses/public_timeline.xml", Args),
-    Body = request_url(get, Url, nil, nil, nil),
-    parse_statuses(Body).
-status_public_timeline(RootUrl, _Consumer, _Token, _Secret, Args) ->
-    status_public_timeline(RootUrl, [], [], [], Args).
-    
-status_friends_timeline(RootUrl, Login, Password, Args) ->
-    UrlBase = RootUrl ++ "statuses/friends_timeline",
+status_home_timeline(Auth, Args) when is_tuple(Auth), is_list(Args) ->
+    Url = build_url("statuses/home_timeline.xml", Args),
+    request_url(get, Url, Auth, [], fun(X) -> parse_statuses(X) end).
+
+status_friends_timeline(Auth, Args) when is_tuple(Auth), is_list(Args) ->
     Url = case lists:keytake("id", 1, Args) of 
-        false ->
-            build_url(UrlBase ++ ".xml", Args);
-        {value, {"id", Id}, RetArgs} ->
-            build_url(UrlBase ++ "/" ++ Id ++ ".xml", RetArgs)
+        false -> build_url("statuses/friends_timeline" ++ ".xml", Args);
+        {_, {"id", Id}, RetArgs} -> build_url("statuses/friends_timeline" ++ "/" ++ Id ++ ".xml", RetArgs)
     end,
-    Body = request_url(get, Url, Login, Password, nil),
-    parse_statuses(Body).
-status_friends_timeline(RootUrl, Consumer, Token, Secret, Args) ->
-    UrlBase = RootUrl ++ "statuses/friends_timeline",
+    request_url(get, Url, Auth, [], fun(X) -> parse_statuses(X) end).
+
+status_user_timeline(Auth, Args) ->
     Url = case lists:keytake("id", 1, Args) of 
-        false ->
-            UrlBase ++ ".xml";
-        {value, {"id", Id}, _RetArgs} ->
-            UrlBase ++ "/" ++ Id ++ ".xml"
+        false -> build_url("statuses/user_timeline" ++ ".xml", Args);
+        {_, {"id", Id}, RetArgs} -> build_url("statuses/user_timeline" ++ "/" ++ Id ++ ".xml", RetArgs)
     end,
-    Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_statuses(Body).
+    request_url(get, Url, Auth, [], fun(X) -> parse_statuses(X) end).
 
-status_user_timeline(RootUrl, Login, Password, Args) ->
-    UrlBase = RootUrl ++ "statuses/user_timeline",
-    Url = case lists:keytake("id", 1, Args) of 
-        false ->
-            build_url(UrlBase ++ ".xml", Args);
-        {value, {"id", Id}, RetArgs} ->
-            build_url(UrlBase ++ "/" ++ Id ++ ".xml", RetArgs)
-    end,
-    Body = request_url(get, Url, Login, Password, nil),
-    parse_statuses(Body).
-status_user_timeline(RootUrl, Consumer, Token, Secret, Args) ->
-    UrlBase = RootUrl ++ "statuses/user_timeline",
-    Url = case lists:keytake("id", 1, Args) of 
-        false ->
-            UrlBase ++ ".xml";
-        {value, {"id", Id}, _RetArgs} ->
-            UrlBase ++ "/" ++ Id ++ ".xml"
-    end,
-    Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_statuses(Body).
+status_mentions(Auth, Args) ->
+    Url = build_url("statuses/mentions.xml", Args),
+    request_url(get, Url, Auth, [], fun(X) -> parse_statuses(X) end).
 
-status_show(RootUrl, Login, Password, Args) ->
-    UrlBase = RootUrl ++ "statuses/show/",
-    case Args of
-        [{"id", Id}] ->
-            Url = build_url(UrlBase ++ Id ++ ".xml", []),
-            Body = request_url(get, Url, Login, Password, nil),
-            parse_status(Body);
-        _ -> {error}
-    end.
-status_show(RootUrl, Consumer, Token, Secret, Args) ->
-    UrlBase = RootUrl ++ "statuses/show/",
-    case Args of
-        [{"id", Id}] ->
-            Url = UrlBase ++ Id ++ ".xml",
-            Body = oauth_request_url(get, Url, Consumer, Token, Secret, nil),
-            parse_status(Body);
-        _ -> {error}
-    end.
+status_show(Auth, [{"id", Id}]) ->
+    Url = build_url("statuses/show/" ++ Id ++ ".xml", []),
+    request_url(get, Url, Auth, [], fun(X) -> parse_status(X) end).
 
-status_update(RootUrl, Login, Password, Args) ->
-    Url = RootUrl ++ "statuses/update.xml",
-    Body = request_url(post, Url, Login, Password, Args),
-    parse_status(Body).
-status_update(RootUrl, Consumer, Token, Secret, Args) ->
-    Url = RootUrl ++ "statuses/update.xml",
-    Body = oauth_request_url(post, Url, Consumer, Token, Secret, Args),
-    parse_status(Body).
+status_update(Auth, Args) ->
+    request_url(post, "statuses/update.xml", Auth, Args, fun(X) -> parse_status(X) end).
 
-status_replies(RootUrl, Login, Password, Args) ->
-    Url = build_url(RootUrl ++ "statuses/replies.xml", Args),
-    Body = request_url(get, Url, Login, Password, nil),
-    parse_statuses(Body).
-status_replies(RootUrl, Consumer, Token, Secret, Args) ->
-    Url = RootUrl ++ "statuses/replies.xml",
-    Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_statuses(Body).
+status_replies(Auth, Args) ->
+    Url = build_url("statuses/replies.xml", Args),
+    request_url(get, Url, Auth, [], fun(X) -> parse_statuses(X) end).
 
-status_destroy(RootUrl, Login, Password, Args) ->
-    UrlBase = RootUrl ++ "statuses/destroy/",
-    case Args of
-        [{"id", Id}] ->
-            Url = build_url(UrlBase ++ Id ++ ".xml", []),
-            Body = request_url(get, Url, Login, Password, nil),
-            parse_status(Body);
-        _ -> {error}
-    end.
-status_destroy(RootUrl, Consumer, Token, Secret, Args) ->
-    UrlBase = RootUrl ++ "statuses/destroy/",
-    case Args of
-        [{"id", Id}] ->
-            Url = UrlBase ++ Id ++ ".xml",
-            Body = oauth_request_url(get, Url, Consumer, Token, Secret, nil),
-            parse_status(Body);
-        _ -> {error}
-    end.
+status_destroy(Auth, [{"id", Id}]) ->
+    Url = build_url("statuses/destroy/" ++ Id ++ ".xml", []),
+    request_url(get, Url, Auth, [], fun(X) -> parse_statuses(X) end).
 
 %% % -
 %% % Account API methods
@@ -397,28 +334,15 @@ account_end_session(RootUrl, Login, Password, _) ->
     Url = build_url(RootUrl ++ "account/end_session", []),
     request_url(get, Url, Login, Password, nil).
 
-account_archive(RootUrl, Login, Password, Args) ->
-    Url = build_url(RootUrl ++ "account/archive.xml", Args),
-    Body = request_url(get, Url, Login, Password, nil),
-    parse_statuses(Body).
-account_archive(RootUrl, Consumer, Token, Secret, Args) ->
-    Url = RootUrl ++ "account/archive.xml",
-    Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_statuses(Body).    
+account_archive(Auth, Args) ->
+    Url = build_url("account/archive.xml", Args),
+    request_url(get, Url, Auth, [], fun(X) -> parse_statuses(X) end).
 
-collect_account_archive(RootUrl, Login, Password, Page, Args, Acc) ->
+collect_account_archive(Auth, Page, Args, Acc) ->
     NArgs = [{"page", integer_to_list(Page)} ] ++ Args,
-    Messages = twitter_client:account_archive(RootUrl, Login, Password, NArgs),
+    Messages = twitter_client:account_archive(Auth, NArgs),
     case length(Messages) of
-        80 -> collect_account_archive(RootUrl, Login, Password, Page + 1, Args, [Messages | Acc]);
-        0 -> lists:flatten(Acc);
-        _ -> lists:flatten([Messages | Acc])
-    end.
-collect_account_archive(RootUrl, Consumer, Token, Secret, Page, Args, Acc) ->
-    NArgs = [{"page", integer_to_list(Page)} ] ++ Args,
-    Messages = twitter_client:account_archive(RootUrl, Consumer, Token, Secret, NArgs),
-    case length(Messages) of
-        80 -> collect_account_archive(RootUrl, Consumer, Token, Secret, Page + 1, Args, [Messages | Acc]);
+        80 -> collect_account_archive(Auth, Page + 1, Args, [Messages | Acc]);
         0 -> lists:flatten(Acc);
         _ -> lists:flatten([Messages | Acc])
     end.
@@ -860,22 +784,39 @@ social_graph_follower_ids(RootUrl, Login, Consumer, Token, Secret, _Args) ->
     Body = oauth_request_url(get, Url, Consumer, Token, Secret, []),
     parse_ids(Body).
 
-%% % -
-%% %  Internal request functions
-
 %% @private
 build_url(Url, []) -> Url;
 build_url(Url, Args) ->
-    ArgStr = lists:concat(
+    Url ++ "?" ++ lists:concat(
         lists:foldl(
-            fun (Rec, []) -> [Rec];
-                (Rec, Ac) -> [Rec, "&" | Ac]
-            end,
-            [],
+            fun (Rec, []) -> [Rec]; (Rec, Ac) -> [Rec, "&" | Ac] end, [],
             [K ++ "=" ++ twitter_client_utils:url_encode(V) || {K, V} <- Args]
         )
-    ),
-    Url ++ "?" ++ ArgStr.
+    ).
+
+request_url(get, Url, {Login, Pass}, _, Fun) ->
+    case http:request(get, {?BASE_URL(Url), headers(Login, Pass)}, [{timeout, 6000}], []) of
+        {ok, {_, _, Body}} -> Fun(Body);
+        Other -> {error, Other}
+    end;
+request_url(post, Url, {Login, Pass}, Args, Fun) ->
+    Body = twitter_client_utils:compose_body(Args),
+    case http:request(post, {?BASE_URL(Url), headers(Login, Pass), "application/x-www-form-urlencoded", Body} , [{timeout, 6000}], []) of
+        {ok, {_, _, Body2}} -> Fun(Body2);
+        Other -> {error, Other}
+    end;
+request_url(get, Url, {Consumer, Token, Secret}, Args, Fun) ->
+    case oauth:get(?BASE_URL(Url), Args, Consumer, Token, Secret) of
+        {ok, {_, _, "Failed to validate oauth signature or token"}} -> {oauth_error, "Failed to validate oauth signature or token"};
+        {ok, {_, _, Body}} -> Fun(Body);
+        Other -> Other
+    end;
+request_url(post, Url, {Consumer, Token, Secret}, Args, Fun) ->
+    case oauth:post(?BASE_URL(Url), Args, Consumer, Token, Secret) of
+        {ok, {_, _, "Failed to validate oauth signature or token"}} -> {oauth_error, "Failed to validate oauth signature or token"};
+        {ok, {_, _, Body}} -> Fun(Body);
+        Other -> Other
+    end;
 
 %% @private
 request_url(get, Url, Login, Pass, _) ->
